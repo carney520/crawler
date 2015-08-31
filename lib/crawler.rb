@@ -21,27 +21,26 @@ trap('INT'){
 
 class Crawler
 	VERSION = '0.0.1'
-	attr_accessor :start_urls,
-		:logger,
-		:filters,
-		:thread_limit,
-		:delay,
-		:encoding,
-		:consumer_wait_queue_limit,
-		:dbname,
-		:consumer,
+	attr_accessor :start_urls,				#crawler entrances
+		:logger,												#the path to save the logger,it defalut to STDOUT
+		:filters,												#the urls filters
+		:thread_limit,                  #the Crawler thread limit
+		:delay,													#specify how long to start next request
+		:encoding,											#the website encoding,the default is nil.
+		:consumer_wait_queue_limit,     #when the Consumer queue size great the this threshold,the Crawler will sleep 
+		:dbname,												#the Redis database index
+		:consumer,											#A Consumer which consume the 'Page' object.As you might expect the Crawler is a Producter
 		#for email
-		:enable_email,
-		:email,
-		:from,
-		:address,
-		:port,
-		:domain,
-		:username,
-		:password,
-		:authentication,
-		:enable_ssl,
-		:enable_starttls_auto
+		:enable_email,									#enable the email,if some problems led to the Crawler down,it will send a email to you
+		:email,													#recipient's email
+		:from,													#sender's email
+		:address,												#the SMTP server ip address or hostname,the default is 'localhost'
+		:port,													#the SMTP server port, the default is 25
+		:domain,												#the HELO domain provided by the client to the server,to default to 'localhost'
+		:username,											#the SMTP authentication account name
+		:password,                      #the SMTP authentication password
+		:authentication,                #the authentication type, one of :plain,:login,:cram_md5
+		:enable_starttls_auto           #enables SMTP/TLS
 
 	def initialize(start_urls=[],            #Crawler entrances
 								 filters={},          #urls filter
@@ -49,9 +48,10 @@ class Crawler
 									 thread_limit:1, #crawler thread limit
 									 delay:0,
 									 dbname:1,        #redis index
-									 consumer_wait_queue_limit:1000, 
+									 consumer_wait_queue_limit:200, 
 									 encoding:nil,    #default encoding
-								 }
+								 },
+								 &block
 								)
 
 		@start_urls=start_urls
@@ -73,13 +73,12 @@ class Crawler
 		@address='localhost'
 		@port=25
 		@domain='localhost'
-		@username=''
-		@password=''
+		@username=nil
+		@password=nil
 		@authentication='plain'
-		@enable_ssl=false
 		@enable_starttls_auto=true
 
-		yield self if block_given?
+		instance_eval(&block) if block_given?
 		#initialize logger
 		$logger=Logger.new(@logger)
 		$logger.datetime_format="%Y:%m:%m %H:%M:%S"
@@ -180,7 +179,7 @@ class Crawler
 					sleep 1
 				end
 			end
-			puts "((((((((((((((((((((#{@tg.list.size}))))))))))))))))))))"
+			#puts "((((((((((((((((((((#{@tg.list.size}))))))))))))))))))))"
 			
 			begin
 				t=Thread.new do
@@ -294,7 +293,6 @@ BODY
 		if @enable_email
 			#send email to the aderministrator
 			Net::SMTP.start(@address,@port,@domain,@username,@password,@authentication)	do |smtp|
-				smtp.enable_ssl if @enable_ssl
 				smtp.enable_starttls_auto if @enable_starttls_auto
 				smtp.send_mail(body,@from,@email)
 			end
@@ -310,78 +308,3 @@ end
 require 'crawler/waitting'
 require 'crawler/frontier'
 require 'crawler/consumer/consumer'
-
-=begin
-Crawler.new do |crawler|
-	crawler.start_urls=['http://667vv.com','http://667vv.com/AAtb/zipai/']
-	crawler.filters={
-		allow:{
-			#'host'=>{
-			#'/path'=>'query'
-			#}
-			'http://667vv.com'=>{
-				#allow 'http://677vv.com' and 'http://677vv.com/'
-				'/'=>nil,
-				#allow 'http://677vv.com/AAtb/zipai[/*]'
-				'/AAtb/zipai'=>nil,
-				#allow 'http://677vv.com/AAwz[/*]'
-				'/AAwz'=>nil
-			}
-		},
-		deny:{
-		}
-	}
-	crawler.thread_limit=1
-	crawler.delay=0
-	crawler.dbname=1
-	crawler.encoding=nil
-	crawler.consumer_wait_queue_limit=100
-
-
-	#when the crawler is down send a mail to administrator
-	crawler.enable_email=true
-	#the administrator's email address
-	crawler.email='carney520@hotmail.com'
-	crawler.from='920432773@qq.com'  #the email-address which same as the authentic user
-	crawler.address='smtp.qq.com'
-	crawler.port=25
-	crawler.username='920432773'
-	crawler.password='kwiqealy8976'
-	crawler.enable_starttls_auto=true
-
-	consumer=crawler.consumer
-	consumer.thread_limit=1
-	consumer.delay=0
-	save_dir='/home/pi/share/toupai'
-	consumer.task={
-		#global consumer
-		'.'=>nil,
-		#host name
-		'667vv.com'=>{
-			#path
-			'/AAwz'=>proc do |page|
-				#article extrator
-				#saver=Consumer::FileSaver.new('/home/pi/share')
-				#Consumer::Article.new(page).saveto(saver).consume
-
-				save_formatter = proc do |uri,title,filename,extname,index|
-					#uri  : the page uri
-					#title: the page title
-					#filename: the source native filename.note that it included extname 
-					#					such as 'asdacada123asdad.jpg'
-					#extname: the resource extname
-					#index  : a uniq index
-					#we should return a string and ensure the string a legal for file save
-					#by default it return a string like "#{title[0..15]}/filename"
-					File.join("#{Time.now.strftime("%Y%m%d")}","#{title[0..15]}","#{index.to_s+extname}")
-				end
-
-				#images download
-				imagedownload=Consumer::Images.new(page).saveto(save_dir).select(/^\/uploads/).enable_thumbnail
-				imagedownload.formatter=save_formatter
-				imagedownload.consume
-			end
-		}
-	}
-end.start
-=end

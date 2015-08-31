@@ -12,7 +12,7 @@ Gem::Specification.new do |spec|
   spec.summary       = %q{A simple web crawler write by Ruby,base on Redis}
   spec.description   = %q{A simple web crawler write by Ruby,base on Redis}
 	spec.requirements  << %q{You must have	Redis installed}
-  spec.homepage      = "TODO: Put your gem's website or public repo URL here."
+	spec.homepage      = "https://github.com/carney520/crawler"
   spec.license       = "MIT"
 
   # Prevent pushing this gem to RubyGems.org by setting 'allowed_push_host', or
