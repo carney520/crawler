@@ -50,8 +50,7 @@ class Crawler
 									 dbname:1,        #redis index
 									 consumer_wait_queue_limit:200, 
 									 encoding:nil,    #default encoding
-								 },
-								 &block
+								 }
 								)
 
 		@start_urls=start_urls
@@ -78,7 +77,7 @@ class Crawler
 		@authentication='plain'
 		@enable_starttls_auto=true
 
-		instance_eval(&block) if block_given?
+		yield self if block_given?
 		#initialize logger
 		$logger=Logger.new(@logger)
 		$logger.datetime_format="%Y:%m:%m %H:%M:%S"
