@@ -27,14 +27,14 @@ Crawler.new do |crawler|
 
 
 	#when the crawler is down send a mail to administrator
-	crawler.enable_email=true
+	crawler.enable_email=false
 	#the administrator's email address
 	crawler.email='carney520@hotmail.com'
 	crawler.from='920432773@qq.com'  #the email-address which same as the authentic user
 	crawler.address='smtp.qq.com'
 	crawler.port=25
 	crawler.username='920432773'
-	crawler.password='kwiqealy8976'
+	crawler.password='***'
 	crawler.enable_starttls_auto=true
 
 	consumer=crawler.consumer
