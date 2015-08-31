@@ -1,6 +1,6 @@
 require 'crawler'
 
-Crawler.new do |crawler|
+crawler=Crawler.new do |crawler|
 	crawler.start_urls=['http://667vv.com','http://667vv.com/AAtb/zipai/']
 	crawler.filters={
 		allow:{
@@ -54,14 +54,15 @@ Crawler.new do |crawler|
 				Consumer::Article.new(page).saveto(saver).consume
 =end
 				save_formatter = proc do |uri,title,filename,extname,index|
-				#uri  : the page uri
-				#title: the page title
-				#filename: the source native filename.note that it included extname 
-				#					such as 'asdacada123asdad.jpg'
-				#extname: the resource extname
-				#index  : a uniq index
-				#we should return a string and ensure the string a legal for file save
-				#by default it return a string like "#{title[0..15]}/filename"
+					#uri  : the page uri
+					#title: the page title
+					#filename: the source native filename.note that it included extname 
+					#					such as 'asdacada123asdad.jpg'
+					#extname: the resource extname
+					#index  : a uniq index
+					#we should return a string and ensure the string a legal for file save
+					#by default it return a string like "#{title[0..15]}/filename"
+					#It will save as save_dir/20150820/pagetitle/0.jpg
 					File.join("#{Time.now.strftime("%Y%m%d")}","#{title[0..15]}","#{index.to_s+extname}")
 				end
 
@@ -74,3 +75,5 @@ Crawler.new do |crawler|
 	}
 end.start
 
+#Warning it will clear the unvisits queue and visiteds queue
+crawler.clear!

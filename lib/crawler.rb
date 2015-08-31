@@ -20,7 +20,6 @@ trap('INT'){
 }
 
 class Crawler
-	VERSION = '0.0.1'
 	attr_accessor :start_urls,				#crawler entrances
 		:logger,												#the path to save the logger,it defalut to STDOUT
 		:filters,												#the urls filters
@@ -266,7 +265,12 @@ class Crawler
 		down($!)
 	ensure
 		$logger.close
+		self
 	end
+
+
+
+
 
 	def down(err)
 		message="#{err.class}\n#{err.message}\n#{err.backtrace.join("\n")}"
@@ -301,6 +305,13 @@ BODY
 		puts $!.class,$!.message,$!.backtrace.join("\n")
 	ensure
 		exit(-1)
+	end
+
+
+
+	def clear!
+		#clear unvisits queue and visiteds queue from Redis
+		@frontier.clear!
 	end
 end
 

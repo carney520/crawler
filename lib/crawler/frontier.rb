@@ -100,20 +100,6 @@ class Domains
 	def initialize(check_valid_period=43200)
 		@db=Redis.new
 		@tablename='domains'
-		begin
-			Thread.new{
-				while true
-					self.each do |key,value|
-						next if Domains.up?(value)
-						self.delete!(key)
-					end
-					sleep check_valid_period
-				end
-			}
-		rescue ThreadError
-			sleep 1
-			retry
-		end
 	end
 
 	def include?(host)
@@ -132,6 +118,10 @@ class Domains
 
 	def delete!(host)
 		@db.hdel(@tablename,host)
+	end
+
+	def clear!
+		@db.del(@tablename)			
 	end
 
 	def each
@@ -194,6 +184,11 @@ class Crawler::Frontier
 
 	def shutdown
 		@redis.quit
+	end
+
+	def clear!
+		@unvisits.clear!
+		@visiteds.clear!
 	end
 
 	def self.uri_compile(url)
