@@ -3,7 +3,7 @@ require 'mechanize'
 require 'crawler/page'
 module Consumer
 	class ResourceConsumer
-		def initialize(page,save_dir='.',download_thread_limit=2)
+		def initialize(page,download_thread_limit=2,save_dir='.')
 			raise ArgumentError unless page.is_a? Page
 			@page=page.clone
 			#get all links from page

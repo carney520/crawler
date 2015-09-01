@@ -1,7 +1,4 @@
 #coding: utf-8
-#version v8
-#download with thread
-#multi thread access unvisited queue and visited queue
 require 'thread'
 require 'mechanize'
 require 'uri'
@@ -10,6 +7,7 @@ require 'thwait'
 require 'fileutils'
 require 'logger'
 require 'net/smtp'
+#$:.unshift(File.expand_path('..',__FILE__))
 
 Thread.abort_on_exception=true
 
@@ -22,6 +20,7 @@ trap('INT'){
 class Crawler
   attr_accessor :start_urls,        #crawler entrances
     :logger,                        #the path to save the logger,it defalut to STDOUT
+    :loglevel,                      #set logger level: UNKNOWN < FATAL < ERROR < WARN < INFO < DEBUG,it default to 'Logger::INFO'
     :filters,                        #the urls filters
     :thread_limit,                  #the Crawler thread limit
     :delay,                          #specify how long to start next request
@@ -39,7 +38,16 @@ class Crawler
     :username,                      #the SMTP authentication account name
     :password,                      #the SMTP authentication password
     :authentication,                #the authentication type, one of :plain,:login,:cram_md5
-    :enable_starttls_auto           #enables SMTP/TLS
+    :enable_starttls_auto,           #enables SMTP/TLS(STARTTLS)
+    :enable_ssl,                      #enables SMTP/TLS(SMTPS:SMTP over direct TLS connection)
+    #Mechanize Agent
+    :user_agent_alias,              #User-Agent alias,it default to 'Mac Safari'
+    :proxy_addr,
+    :proxy_port,
+    :proxy_user,
+    :proxy_pass,
+    :allow_robots                   
+
 
   def initialize(start_urls=[],            #Crawler entrances
                  filters={},          #urls filter
@@ -56,13 +64,14 @@ class Crawler
     @filters=filters
     #the max Thread limit
     @thread_limit=        options[:thread_limit]
-    @delay=       options[:delay]
+    @delay=               options[:delay]
     @encoding=            options[:encoding]
     @consumer_wait_queue_limit=options[:consumer_wait_queue_limit]
     @dbname=              options[:dbname]
     @consumer= Consumer::Parser.new()
 
     @logger=STDOUT
+    @loglevel=Logger::INFO
 
     #for email
     @enable_email=false
@@ -73,12 +82,23 @@ class Crawler
     @domain='localhost'
     @username=nil
     @password=nil
-    @authentication='plain'
+    @authentication=:login
     @enable_starttls_auto=true
+    @enable_ssl=false
+
+    #mechanize agent
+    @user_agent_alias='Mac Safari'
+    @proxy_addr=nil
+    @proxy_port=nil
+    @proxy_user=nil
+    @proxy_pass=nil
+    @allow_robots=true
 
     yield self if block_given?
+
     #initialize logger
     $logger=Logger.new(@logger)
+    $logger.level=@loglevel
     $logger.datetime_format="%Y:%m:%m %H:%M:%S"
     $logger.formatter=proc{|serverity,datetime,programname,msg|
       "[#{datetime}]-[#{serverity}]-#{msg}"
@@ -86,7 +106,7 @@ class Crawler
 
 
 
-    $logger.info("[Crawler] : Initializing Crawler...\n")
+    $logger.info("[Crawler] Initializing Crawler...\n")
 
     #ensure the consumer dbname according to crawler
     @consumer.dbname=@dbname
@@ -98,7 +118,7 @@ class Crawler
 
     filter=LinkFilter.new(@filters[:allow],@filters[:deny])
     @frontier.filter_compile(filter)
-    $logger.info("[Crawler] : Compiled filters...\n")
+    $logger.info("[Crawler] Compiled filters...\n")
 
 
     #initial a thread group with include download threads
@@ -109,17 +129,29 @@ class Crawler
     }
 
     if @frontier.empty?
-      $logger.fatal("[Crawler] : Initial url illegal\n")
-      $stderr.puts "initial url illegal!\n"
+      $logger.fatal("[Crawler] Initial url illegal\n")
+      $stderr.puts "start_urls illegal!\n"
       exit(-1)
     end
+  
+    #create a Mechanize agent  
+    $logger.info("[Crawler] start session\n")
+    @agent=Mechanize.new{|a|
+      a.robots=@allow_robots
+      a.keep_alive=false
+      a.user_agent_alias=@user_agent_alias
+      a.set_proxy(@proxy_addr,@proxy_port,@proxy_user,@proxy_pass) if @proxy_addr && @proxy_port
+      #a.gzip_enabled=true
+      a.max_history=1
+    }
 
     @finished=0
     @producter=Consumer::Product.new(@dbname)
 
   end
 
-  def  add_links(page)
+
+  def add_links(page)
     page.links.each do |link|
       begin
         uri=URI(link.href)
@@ -139,24 +171,19 @@ class Crawler
   end
 
   def start
-    #@start_time=Time.now
-    @agent=Mechanize.new{|a|
-      a.robots=true
-      a.keep_alive=false
-      a.user_agent_alias='Mac Safari'
-      #a.gzip_enabled=true
-      a.max_history=1
-    }
+    @start_time=Time.now
 
     #fork a sub process to consume the resource
     @childproc = fork do
-      $logger.info("[Crawler] : Fork a subprocess to consum the fetch results\n")
+      $logger.info("[Crawler] Fork a Consumer\n")
       begin
         @consumer.start
       rescue
         #down the process
-        puts $!.class,$!.message,$!.backtrace
+        $logger.fatal("[Crawler] Consumer down!(#{$!.class}:#{$!.message}):\n#{$!.backtrace.join("\n")}\n")
+        #kill parent
         Process.kill('INT',Process.ppid)
+        self.down($!)
         exit(-1)
       end
     end
@@ -166,8 +193,7 @@ class Crawler
 
     until @frontier.empty?
       #a Thread sliding window
-      #@tg.list.first.join if @tg.list.size >=30
-      while @tg.list.size > @thread_limit
+      while @tg.list.size >= @thread_limit
         begin
           ThreadsWait.all_waits(@tg.list) do
             #break if any thread finished
@@ -177,22 +203,22 @@ class Crawler
           sleep 1
         end
       end
-      #puts "((((((((((((((((((((#{@tg.list.size}))))))))))))))))))))"
       
       begin
         t=Thread.new do
+          $logger.debug("[Crawler] Fork a thread(#{@tg.list.size})\n")
           #when empty the Array would not block
           crawler_link=@frontier.shift
           #check if visited
           Thread.exit if crawler_link.nil? || @frontier.visited?(crawler_link)
             agent=@agent
-          offline_retry_count=0
+            offline_retry_count=0
           begin
             #clone the agent so they in one session
             page=agent.get(crawler_link,[],nil,{'Host'=>crawler_link.host})
             page.encoding=@encoding unless @encoding.nil?
           rescue Mechanize::RobotsDisallowedError
-            $logger.info("[Crawler] : Rotbots disallow:#{crawler_link.to_s}\n")
+            $logger.warn("[Crawler] Rotbots disallow:#{crawler_link.to_s}\n")
             Thread.exit
           rescue Mechanize::ResponseCodeError
             case $!.response_code
@@ -201,11 +227,15 @@ class Crawler
               sleep 1
               retry
             else
-              $logger.warn("[Crawler] : Abandon [#{$!.response_code}]-#{crawler_link.to_s[0..36]+'...'}\n")
+              $logger.warn("[Crawler] Abandon [#{$!.response_code}]-#{crawler_link.to_s[0..36]+'...'}\n")
               Thread.exit
             end
+          rescue Mechanize::ResponseReadError
+            #problem with content-length
+            page=$!.force_parse()
           rescue SocketError
             #the network break up
+            #if the network is break up,retry 3 times
             offline_retry_count+=1
             if offline_retry_count == 3
               down($!)
@@ -214,7 +244,7 @@ class Crawler
             end
           rescue 
             #exit when error raised
-            $logger.warn("[Crawler] : Error(#{$!.class}:#{$!.message}) raised when access #{crawler_link.to_s}\n")
+            $logger.warn("[Crawler]  Error(#{$!.class}:#{$!.message}) raised when access #{crawler_link.to_s}\n")
             Thread.exit
           ensure
             @frontier.visited(crawler_link)
@@ -227,7 +257,7 @@ class Crawler
           #we can't push the page directly
           #because it can't dump by YAML
           @producter.push(Consumer::Page.new(page))
-          $logger.info("[Crawler] : Visited: #{crawler_link.to_s} #{page.title}\n")
+          $logger.info("[Crawler] Visited #{crawler_link.to_s} #{page.title}\n")
           add_finished
         end
       rescue ThreadError
@@ -243,6 +273,7 @@ class Crawler
       #Set a limit to the Consumers Queue
       sleep 1 while @producter.size > @consumer_wait_queue_limit
     end
+    #all done,now we shutdown the Mechanize agent
     @agent.shutdown
     #join all unfinished threads
     @tg.list.each{|th| th.join}
@@ -250,17 +281,18 @@ class Crawler
     until @producter.empty?
       sleep 1
     end
+    #and join the Consumer
     Process.wait(@childproc)
 
-    #print total
+    #print statistic
     puts "Total    :   #{Time.now-@start_time}"
     puts "dealed   :   #{@finished}"
     puts "Unvisited:   #{@frontier.unvisits_size}"
     puts "Visited  :   #{@frontier.visiteds_size}"
-    $logger.info "[Crawler]:dealed   :   #{@finished}\n"
-    $logger.info "[Crawler]:Total    :   #{Time.now-@start_time}\n"
-    $logger.info "[Crawler]:Unvisited:   #{@frontier.unvisits_size}\n"
-    $logger.info "[Crawler]:Visited  :   #{@frontier.visiteds_size}\n"
+    $logger.info "[Crawler] dealed   :   #{@finished}\n"
+    $logger.info "[Crawler] Total    :   #{Time.now-@start_time}\n"
+    $logger.info "[Crawler] Unvisited:   #{@frontier.unvisits_size}\n"
+    $logger.info "[Crawler] Visited  :   #{@frontier.visiteds_size}\n"
   rescue
     down($!)
   ensure
@@ -278,7 +310,7 @@ class Crawler
     #kill the subprocess
     #log the down reason and notify Aderministrater
 
-    body=<<BODY
+body=<<BODY
 From: crawler <#{@from}>
 To: #{@email}
 Subject: Crawler was down!
@@ -288,7 +320,7 @@ ErrorClass      : #{err.class}
 ErrorMessage    : #{err.message}
 ------------------------------
 ErrorBacktrace  : 
-#{err.backtrace.join("\n")}
+    #{err.backtrace.map{|str| "\t\t"+str.to_s}.join("\n")}
 ------------------------------
 ErrorRaisedTime : #{Time.now.to_s}
 BODY
@@ -297,16 +329,16 @@ BODY
       #send email to the aderministrator
       Net::SMTP.start(@address,@port,@domain,@username,@password,@authentication)  do |smtp|
         smtp.enable_starttls_auto if @enable_starttls_auto
+        smtp.enable_ssl if @enable_ssl
         smtp.send_mail(body,@from,@email)
       end
     end
-    Process.kill('INT',@childproc)
+    Process.kill('INT',@childproc) if @childproc
   rescue
     puts $!.class,$!.message,$!.backtrace.join("\n")
   ensure
     exit(-1)
   end
-
 
 
   def clear!

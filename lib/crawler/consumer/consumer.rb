@@ -87,7 +87,7 @@ module Consumer
 			waiting.waiting
 			until @list.empty? 
 				page=@list.shift
-				while @tg.list.size > @thread_limit
+				while @tg.list.size >= @thread_limit
 					begin
 						ThreadsWait.all_waits(@tg.list) do
 							#break if any thread finished
@@ -100,6 +100,7 @@ module Consumer
 
 				begin
 					t=Thread.new do
+						$logger.debug("[Consumer] Fork a Thread(#{@tg.list.size})\n")
 						#yield page
 						@delegator.action(page)
 					end

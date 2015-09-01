@@ -3,7 +3,7 @@ require 'mini_magick'
 require 'fileutils'
 module Consumer
 	class Images < ResourceConsumer
-		def initialize(page,save_dir='.',download_thread_limit=2)
+		def initialize(page,download_thread_limit=2,save_dir='.')
 			super
 			@urls=@page.images.map{|img| img[:url]}
 			@current_select=@urls
