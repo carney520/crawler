@@ -7,7 +7,7 @@ require 'thwait'
 require 'fileutils'
 require 'logger'
 require 'net/smtp'
-#$:.unshift(File.expand_path('..',__FILE__))
+$:.unshift(File.expand_path('..',__FILE__))
 
 Thread.abort_on_exception=true
 
@@ -18,7 +18,16 @@ trap('INT'){
 }
 
 class Crawler
-  attr_accessor :start_urls,        #crawler entrances
+  instance_eval{
+    def writable(*sym)
+      sym.each do |s|
+        define_method s.to_s do |data|
+          instance_variable_set "@#{s.to_s}",data
+        end
+      end
+    end
+  }
+  writable :start_urls,        #crawler entrances
     :logger,                        #the path to save the logger,it defalut to STDOUT
     :loglevel,                      #set logger level: UNKNOWN < FATAL < ERROR < WARN < INFO < DEBUG,it default to 'Logger::INFO'
     :filters,                        #the urls filters
@@ -27,10 +36,9 @@ class Crawler
     :encoding,                      #the website encoding,the default is nil.
     :consumer_wait_queue_limit,     #when the Consumer queue size great the this threshold,the Crawler will sleep 
     :dbname,                        #the Redis database index
-    :consumer,                      #A Consumer which consume the 'Page' object.As you might expect the Crawler is a Producter
     #for email
     :enable_email,                  #enable the email,if some problems led to the Crawler down,it will send a email to you
-    :email,                          #recipient's email
+    :to,                          #recipient's email
     :from,                          #sender's email
     :address,                        #the SMTP server ip address or hostname,the default is 'localhost'
     :port,                          #the SMTP server port, the default is 25
@@ -39,15 +47,8 @@ class Crawler
     :password,                      #the SMTP authentication password
     :authentication,                #the authentication type, one of :plain,:login,:cram_md5
     :enable_starttls_auto,           #enables SMTP/TLS(STARTTLS)
-    :enable_ssl,                      #enables SMTP/TLS(SMTPS:SMTP over direct TLS connection)
+    :enable_ssl                      #enables SMTP/TLS(SMTPS:SMTP over direct TLS connection)
     #Mechanize Agent
-    :user_agent_alias,              #User-Agent alias,it default to 'Mac Safari'
-    :proxy_addr,
-    :proxy_port,
-    :proxy_user,
-    :proxy_pass,
-    :allow_robots                   
-
 
   def initialize(start_urls=[],            #Crawler entrances
                  filters={},          #urls filter
@@ -57,7 +58,8 @@ class Crawler
                    dbname:1,        #redis index
                    consumer_wait_queue_limit:200, 
                    encoding:nil,    #default encoding
-                 }
+                 },
+                 &block
                 )
 
     @start_urls=start_urls
@@ -75,8 +77,8 @@ class Crawler
 
     #for email
     @enable_email=false
-    @email=''
-    @from=@email
+    @to=''
+    @from=@to
     @address='localhost'
     @port=25
     @domain='localhost'
@@ -87,14 +89,9 @@ class Crawler
     @enable_ssl=false
 
     #mechanize agent
-    @user_agent_alias='Mac Safari'
-    @proxy_addr=nil
-    @proxy_port=nil
-    @proxy_user=nil
-    @proxy_pass=nil
-    @allow_robots=true
+    @agent=Crawler::Agent.instance
 
-    yield self if block_given?
+    instance_eval(&block) if block_given?
 
     #initialize logger
     $logger=Logger.new(@logger)
@@ -111,7 +108,7 @@ class Crawler
     #ensure the consumer dbname according to crawler
     @consumer.dbname=@dbname
 
-    #check option here
+    #check out option here
     raise ArgumentError,'start_urls is empty' if @start_urls.empty?
 
     @frontier=Crawler::Frontier.new(@dbname)
@@ -121,7 +118,7 @@ class Crawler
     $logger.info("[Crawler] Compiled filters...\n")
 
 
-    #initial a thread group with include download threads
+    #initial a thread group with include crawler threads
     @tg=ThreadGroup.new
 
     @start_urls.each{|uri|
@@ -129,25 +126,34 @@ class Crawler
     }
 
     if @frontier.empty?
-      $logger.fatal("[Crawler] Initial url illegal\n")
-      $stderr.puts "start_urls illegal!\n"
+      $logger.fatal("[Crawler] start urls illegal\n")
       exit(-1)
     end
   
     #create a Mechanize agent  
     $logger.info("[Crawler] start session\n")
-    @agent=Mechanize.new{|a|
-      a.robots=@allow_robots
-      a.keep_alive=false
-      a.user_agent_alias=@user_agent_alias
-      a.set_proxy(@proxy_addr,@proxy_port,@proxy_user,@proxy_pass) if @proxy_addr && @proxy_port
-      #a.gzip_enabled=true
-      a.max_history=1
-    }
+    @agent.keep_alive=false
+    #a.gzip_enabled=true
+    @agent.max_history=1
 
     @finished=0
     @producter=Consumer::Product.new(@dbname)
 
+  end
+
+  def agent(&block)
+    yield @agent if block_given?
+    @agent
+  end
+
+  def consumer
+    yield @consumer if block_given?
+    @consumer
+  end
+
+  def enable_email(&block)
+    @enable_email=true
+    instance_eval(&block) if block_given?
   end
 
 
@@ -211,48 +217,19 @@ class Crawler
           crawler_link=@frontier.shift
           #check if visited
           Thread.exit if crawler_link.nil? || @frontier.visited?(crawler_link)
-            agent=@agent
-            offline_retry_count=0
           begin
             #clone the agent so they in one session
-            page=agent.get(crawler_link,[],nil,{'Host'=>crawler_link.host})
-            page.encoding=@encoding unless @encoding.nil?
-          rescue Mechanize::RobotsDisallowedError
-            $logger.warn("[Crawler] Rotbots disallow:#{crawler_link.to_s}\n")
-            Thread.exit
-          rescue Mechanize::ResponseCodeError
-            case $!.response_code
-            when '202' then
-              #the request non finish,block to read
-              sleep 1
-              retry
-            else
-              $logger.warn("[Crawler] Abandon [#{$!.response_code}]-#{crawler_link.to_s[0..36]+'...'}\n")
-              Thread.exit
-            end
-          rescue Mechanize::ResponseReadError
-            #problem with content-length
-            page=$!.force_parse()
-          rescue SocketError
-            #the network break up
-            #if the network is break up,retry 3 times
-            offline_retry_count+=1
-            if offline_retry_count == 3
-              down($!)
-            else
-              retry
-            end
-          rescue 
-            #exit when error raised
-            $logger.warn("[Crawler]  Error(#{$!.class}:#{$!.message}) raised when access #{crawler_link.to_s}\n")
-            Thread.exit
+            page=@agent.get(crawler_link,Mechanize::Page,[],nil,{'Host'=>crawler_link.host})
+            page.encoding=@encoding unless @encoding.nil? || page.nil?
+          rescue OfflineError
+            #network off-line
+            down($!)
           ensure
             @frontier.visited(crawler_link)
           end
 
-          Thread.exit unless page.instance_of? Mechanize::Page
+          Thread.exit unless page
           add_links(page)
-
           #push page for consumer
           #we can't push the page directly
           #because it can't dump by YAML
@@ -274,7 +251,6 @@ class Crawler
       sleep 1 while @producter.size > @consumer_wait_queue_limit
     end
     #all done,now we shutdown the Mechanize agent
-    @agent.shutdown
     #join all unfinished threads
     @tg.list.each{|th| th.join}
     #until all source been consumed
@@ -283,12 +259,9 @@ class Crawler
     end
     #and join the Consumer
     Process.wait(@childproc)
+    @agent.shutdown
 
     #print statistic
-    puts "Total    :   #{Time.now-@start_time}"
-    puts "dealed   :   #{@finished}"
-    puts "Unvisited:   #{@frontier.unvisits_size}"
-    puts "Visited  :   #{@frontier.visiteds_size}"
     $logger.info "[Crawler] dealed   :   #{@finished}\n"
     $logger.info "[Crawler] Total    :   #{Time.now-@start_time}\n"
     $logger.info "[Crawler] Unvisited:   #{@frontier.unvisits_size}\n"
@@ -306,13 +279,13 @@ class Crawler
 
   def down(err)
     message="#{err.class}\n#{err.message}\n#{err.backtrace.join("\n")}"
-    $logger.fatal "[Crawler] crawler down #{message}"
+    $logger.fatal "[Crawler] crawler down #{message}\n"
     #kill the subprocess
     #log the down reason and notify Aderministrater
 
 body=<<BODY
 From: crawler <#{@from}>
-To: #{@email}
+To: #{@to}
 Subject: Crawler was down!
 
 ErrorClass      : #{err.class}
@@ -330,7 +303,7 @@ BODY
       Net::SMTP.start(@address,@port,@domain,@username,@password,@authentication)  do |smtp|
         smtp.enable_starttls_auto if @enable_starttls_auto
         smtp.enable_ssl if @enable_ssl
-        smtp.send_mail(body,@from,@email)
+        smtp.send_mail(body,@from,@to)
       end
     end
     Process.kill('INT',@childproc) if @childproc
@@ -347,6 +320,8 @@ BODY
   end
 end
 
+require 'crawler/agent'
+require 'crawler/exception'
 require 'crawler/waitting'
 require 'crawler/frontier'
 require 'crawler/consumer/consumer'

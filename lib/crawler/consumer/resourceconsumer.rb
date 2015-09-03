@@ -1,5 +1,5 @@
 require 'crawler/consumer/download'
-require 'mechanize'
+require 'crawler/agent'
 require 'crawler/page'
 module Consumer
 	class ResourceConsumer
@@ -56,11 +56,7 @@ module Consumer
 
 			return if urls.nil? or urls.empty?
 			urls.uniq!
-			agent=Mechanize.new{|a|
-				a.keep_alive=false
-				#a.max_history=1
-				a.user_agent_alias='Mac Safari'
-			}
+			agent=Crawler::Agent.instance
 
 			if mime.is_a? Array
 				mime.each{|m|
@@ -82,29 +78,12 @@ module Consumer
 						link=Crawler::Frontier.uri_compile(URI.decode(url.to_s))
 						next nil if link.nil?
 						#clone
-						begin
-							src=agent.get(link,[],nil,{'Host'=>link.host,
+						agent.get(link,Mechanize::Download,[],nil,{'Host'=>link.host,
 																	#anti hotlinking protection
-																	'Referer'=>@page.uri.to_s
-							})
-							next nil unless src.is_a? Mechanize::Download
-							src
-						rescue Mechanize::ResponseCodeError
-							case $!.response_code
-							when '202' then
-								sleep 1
-								retry
-							else
-								$logger.warn("[Download] Abandon [#{$!.response_code}]-#{$!.message}-host=#{link.host}-referer=#{@page.uri.to_s}\n")
-								nil
-							end
-						rescue
-							$logger.warn("[Download] Skip error raise(#{$!.message})-#{link.to_s[0..15]}-#{@page.uri.to_s}\n")
-							next nil
-						end
+																	'Referer'=>@page.uri.to_s})
 					end
 					#now save file
-					if result
+					if result && result.is_a?(Mechanize::Download)
 						#if extname is empty,add extname
 						save_name=File.extname(result.filename).empty? ? result.filename+extname : result.filename
 						full_save_path=@formatter.call(url,@page.title,save_name,extname,index)
@@ -129,7 +108,6 @@ module Consumer
 				end
 			end #end of each
 			download.scheduler
-			agent.shutdown
 
 			resource_save_dir=File.expand_path('..',filename)
 			#delete repeat file
